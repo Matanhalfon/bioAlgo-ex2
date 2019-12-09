@@ -41,7 +41,7 @@ def parse_initial_emission(file):
     df[B_END_LETTER] = EMISSION_PROBABILITY
     df[B_START_LETTER] = EMISSION_PROBABILITY
     df = background.append(df)
-    return df.as_matrix()
+    return df.values
 
 
 def get_transition(p, q, states_number):
@@ -67,10 +67,10 @@ def get_transition(p, q, states_number):
 
 def get_viterbi_tables(seq, e_table, t_table):
     '''
-
-    :param seq:
-    :param e_table:
-    :param t_table:
+    computes the viterbi table for the seq and return the state table
+    :param seq: DNA sequence
+    :param e_table: the emission table
+    :param t_table: the transition table
     :return: states table- the state from which we arrived to each state
     '''
     v_table = init_table(t_table, len(seq), B_START_INDEX, INITIATION_COL_INDEX_FORWARD)
@@ -78,9 +78,9 @@ def get_viterbi_tables(seq, e_table, t_table):
     states_table = np.zeros((states_number, len(seq))).astype(np.int)
     for i in range(1, len(seq)):
         for k in range(states_number):
-            v = v_table[:, i - 1] * t_table[:, k]
+            v = v_table[:, i - 1] + t_table[:, k]
             states_table[k][i] = np.argmax(v)
-            v_table[k][i] = np.max(v) * e_table[k][LETTERS_DICT[seq[i]]]
+            v_table[k][i] = np.max(v) + e_table[k][LETTERS_DICT[seq[i]]]
     return states_table
 
 
@@ -95,9 +95,9 @@ def pad_seq(seq):
 
 def cover_viterbi_path(s_table):
     '''
-
-    :param s_table:
-    :return:
+    return the state shift along the seq
+    :param s_table: the score table that set the liklehood  for the state according to the seq
+    :return:the state shift
     '''
     seq_len = len(s_table[0])
     path = np.zeros(seq_len)
@@ -105,11 +105,16 @@ def cover_viterbi_path(s_table):
     for i in range(seq_len - 1, 0, -1):
         current_state = s_table[current_state][i]
         path[i - 1] = current_state
-    path = path[1:-1]
-    return NO_DELIMITER.join([BACKGROUND if l in (B1_INDEX, B2_INDEX) else MOTIF for l in path])
+    return path[1:-1]
 
 
-def print_viterbi_path(path, seq):
+def print_path(path, seq):
+    """
+    print the vitrebi path next to the seq
+    :param path: the state shift along the seq
+    :param seq: the seq
+    """
+    path = NO_DELIMITER.join([BACKGROUND if l in (B1_INDEX, B2_INDEX) else MOTIF for l in path])
     index = 0
     for i in range(len(seq) // MAX_LINE_LEN):
         print(path[i * MAX_LINE_LEN:(i + 1) * MAX_LINE_LEN])
@@ -120,30 +125,61 @@ def print_viterbi_path(path, seq):
 
 
 def init_table(t_table, seq_len, init_state_index, init_col_index):
+    """
+    init a table for the forward and backward algorithm
+    :param t_table: the transition table
+    :param seq_len: the length of the seq
+    :param init_state_index:  the index where the state start for the algorithm
+    :param init_col_index: the col to start the algorithm
+    :return: the table of zeros with an an 1 probability on the starting state (preform log on all of
+    the table to prevant underflow)
+    """
     states_number = t_table.shape[ROW_INDEX]
     f_table = np.zeros((states_number, seq_len))
     f_table[init_state_index][init_col_index] = 1
-    return f_table
+    with np.errstate(divide='ignore'):
+        return np.log(f_table)
 
 
 def forward(seq, e_table, t_table):
+    """
+    run the forward algorithm
+    :param seq: the seq
+    :param e_table: the emit table
+    :param t_table: the transtion table
+    :return: the table after the forward algorithm fill with the log liklehood for etch state and emition
+    """
+
     f_table = init_table(t_table, len(seq), B_START_INDEX, INITIATION_COL_INDEX_FORWARD)
     for i in range(1, len(seq)):
         for k in range(t_table.shape[ROW_INDEX]):  # TODO
-            f_table[k][i] = np.sum((f_table[:, i - 1] * t_table[:, k]) * e_table[k][LETTERS_DICT[seq[i]]])
+            addition=(f_table[:, i - 1] + t_table[:, k]) + e_table[k][LETTERS_DICT[seq[i]]]
+            f_table[k][i] = logsumexp(addition)
     return f_table
 
 
 def backward(seq, e_table, t_table):
+    """
+       run the backward algorithm
+       :param seq: the seq
+       :param e_table: the emit table
+       :param t_table: the transtion table
+       :return: the table after the backward algorithm fill with the log liklehood for etch state and emition
+       """
     b_table=init_table(t_table,len(seq),B_END_INDEX,INITIATION_COL_INDEX_BACKWARD)
     for i in range(len(seq) - 1, 0, -1):
         for l in range(t_table.shape[ROW_INDEX]):
-            b_table[l][i - 1] = np.sum((b_table[:, i] * t_table[l, :]).T * e_table[:, LETTERS_DICT[seq[i]]])
+            addition=[b_table[:, i] + t_table[l, :].T + e_table[:, LETTERS_DICT[seq[i]]]]
+            b_table[l][i - 1] =logsumexp(addition)
     return b_table
 
 def posterior(seq, e_table, t_table):
-    f_table = forward(pad_seq(seq),e_table,t_table)
-    b_table = backward(pad_seq(seq),e_table,t_table)
+    f_table = forward(seq,e_table,t_table)
+    b_table = backward(seq,e_table,t_table)
+    posterior_table=f_table*b_table
+    posterior_table[posterior_table>=np.inf]=-np.inf
+    maxies=posterior_table.argmax(axis=0)
+    return maxies[1:-1]
     
 
 def main():
@@ -154,23 +190,25 @@ def main():
     parser.add_argument('p', help='transition probability p (e.g. 0.01)', type=float)
     parser.add_argument('q', help='transition probability q (e.g. 0.5)', type=float)
     args = parser.parse_args()
-    e_table = parse_initial_emission(args.initial_emission)
-    t_table = get_transition(args.p, args.q, len(e_table[:, 0]))
+    with np.errstate(divide='ignore'):
+        e_table = np.log(parse_initial_emission(args.initial_emission))
+        t_table = np.log(get_transition(args.p, args.q, len(e_table[:, 0])))
     if args.alg == 'viterbi':
         s_table = get_viterbi_tables(pad_seq(args.seq), e_table, t_table)
         path = cover_viterbi_path(s_table)
-        print_viterbi_path(path, args.seq)
+        print_path(path, args.seq)
 
     elif args.alg == 'forward':
         f_table = forward(pad_seq(args.seq),e_table,t_table)
-        print(np.log(f_table[B_END_INDEX][-1]))
+        return (f_table[B_END_INDEX][-1])
 
     elif args.alg == 'backward':
         b_table = backward(pad_seq(args.seq),e_table,t_table)
-        print(np.log(b_table[B_START_INDEX][0]))
+        return (b_table[B_START_INDEX][0])
 
     elif args.alg == 'posterior':
-        raise NotImplementedError
+        states = posterior(pad_seq(args.seq),e_table,t_table)
+        print_path(states, args.seq)
 
 
 if __name__ == '__main__':
