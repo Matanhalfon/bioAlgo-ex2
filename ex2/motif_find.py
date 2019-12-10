@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 from scipy.special import logsumexp
 
-
 BACKGROUND_E_FRAME = [[0.25, 0.25, 0.25, 0.25, 0, 0], [0.25, 0.25, 0.25, 0.25, 0, 0], [0, 0, 0, 0, 0, 1],
                       [0, 0, 0, 0, 1, 0]]
 LETTERS = 'ACGT$^'
@@ -12,11 +11,13 @@ B_START_LETTER = '^'
 BACKGROUND = 'B'
 MOTIF = 'M'
 ROW_INDEX = 0
+COL_INDEX = 1
 INITIATION_COL_INDEX_FORWARD = 0
 INITIATION_COL_INDEX_BACKWARD = -1
 BACKGROUND_STATES_NUM = 4
-EMISSION_PROBABILITY = 0
+NO_EMISSION_PROBABILITY = 0
 SURE_TRANSIT = 1
+SURE_START = 1
 LAST_STATE_IN_MOTIF = 1
 B1_INDEX = 0
 B2_INDEX = 1
@@ -28,6 +29,11 @@ LETTERS_DICT = {"A": 0, "C": 1, "G": 2, "T": 3, "$": 4, "^": 5}
 MAX_LINE_LEN = 50
 NEW_LINE = '\n'
 NO_DELIMITER = ''
+ORIGINAL_SEQ_START_INDEX = 1
+ORIGINAL_SEQ_END_INDEX = -1
+EMIT_SEP = '\t'
+FINISH_COL_INDEX_FORWARD = -1
+FINISH_COL_INDEX_BACKWARD = 0
 
 
 def parse_initial_emission(file):
@@ -37,9 +43,9 @@ def parse_initial_emission(file):
     :return:emition_table
     '''
     background = pd.DataFrame(BACKGROUND_E_FRAME, columns=list(LETTERS))
-    df = pd.read_csv(file, sep='\t')
-    df[B_END_LETTER] = EMISSION_PROBABILITY
-    df[B_START_LETTER] = EMISSION_PROBABILITY
+    df = pd.read_csv(file, sep=EMIT_SEP)
+    df[B_END_LETTER] = NO_EMISSION_PROBABILITY
+    df[B_START_LETTER] = NO_EMISSION_PROBABILITY
     df = background.append(df)
     return df.values
 
@@ -77,10 +83,10 @@ def get_viterbi_tables(seq, e_table, t_table):
     states_number = t_table.shape[ROW_INDEX]
     states_table = np.zeros((states_number, len(seq))).astype(np.int)
     for i in range(1, len(seq)):
-        for k in range(states_number):
-            v = v_table[:, i - 1] + t_table[:, k]
-            states_table[k][i] = np.argmax(v)
-            v_table[k][i] = np.max(v) + e_table[k][LETTERS_DICT[seq[i]]]
+        v_mat = np.tile(v_table[:, i - 1], (t_table.shape[ROW_INDEX], 1))
+        addition = v_mat + t_table.T
+        v_table[:, i] = np.max(addition, axis=COL_INDEX) + e_table[:, LETTERS_DICT[seq[i]]]
+        states_table[:, i] = np.argmax(addition, axis=COL_INDEX)
     return states_table
 
 
@@ -99,13 +105,13 @@ def cover_viterbi_path(s_table):
     :param s_table: the score table that set the liklehood  for the state according to the seq
     :return:the state shift
     '''
-    seq_len = len(s_table[0])
+    seq_len = len(s_table[ROW_INDEX])
     path = np.zeros(seq_len)
     current_state = B_END_INDEX
     for i in range(seq_len - 1, 0, -1):
         current_state = s_table[current_state][i]
         path[i - 1] = current_state
-    return path[1:-1]
+    return path[ORIGINAL_SEQ_START_INDEX:ORIGINAL_SEQ_END_INDEX]
 
 
 def print_path(path, seq):
@@ -121,7 +127,7 @@ def print_path(path, seq):
         print(seq[i * MAX_LINE_LEN:(i + 1) * MAX_LINE_LEN] + NEW_LINE)
         index += 1
     print(path[index * MAX_LINE_LEN:])
-    print(seq[index * MAX_LINE_LEN:])
+    print(seq[index * MAX_LINE_LEN:]+NEW_LINE)
 
 
 def init_table(t_table, seq_len, init_state_index, init_col_index):
@@ -136,7 +142,7 @@ def init_table(t_table, seq_len, init_state_index, init_col_index):
     """
     states_number = t_table.shape[ROW_INDEX]
     f_table = np.zeros((states_number, seq_len))
-    f_table[init_state_index][init_col_index] = 1
+    f_table[init_state_index][init_col_index] = SURE_START
     with np.errstate(divide='ignore'):
         return np.log(f_table)
 
@@ -149,12 +155,12 @@ def forward(seq, e_table, t_table):
     :param t_table: the transtion table
     :return: the table after the forward algorithm fill with the log liklehood for etch state and emition
     """
-
     f_table = init_table(t_table, len(seq), B_START_INDEX, INITIATION_COL_INDEX_FORWARD)
     for i in range(1, len(seq)):
-        for k in range(t_table.shape[ROW_INDEX]):  # TODO
-            addition=(f_table[:, i - 1] + t_table[:, k]) + e_table[k][LETTERS_DICT[seq[i]]]
-            f_table[k][i] = logsumexp(addition)
+        f_mat = np.tile(f_table[:, i - 1], (t_table.shape[ROW_INDEX], 1))
+        e_mat = np.tile(e_table[:, LETTERS_DICT[seq[i]]], (t_table.shape[ROW_INDEX], 1)).T
+        addition = f_mat + t_table.T + e_mat
+        f_table[:, i] = logsumexp(addition, axis=COL_INDEX)
     return f_table
 
 
@@ -166,21 +172,22 @@ def backward(seq, e_table, t_table):
        :param t_table: the transtion table
        :return: the table after the backward algorithm fill with the log liklehood for etch state and emition
        """
-    b_table=init_table(t_table,len(seq),B_END_INDEX,INITIATION_COL_INDEX_BACKWARD)
+    b_table = init_table(t_table, len(seq), B_END_INDEX, INITIATION_COL_INDEX_BACKWARD)
     for i in range(len(seq) - 1, 0, -1):
-        for l in range(t_table.shape[ROW_INDEX]):
-            addition=[b_table[:, i] + t_table[l, :].T + e_table[:, LETTERS_DICT[seq[i]]]]
-            b_table[l][i - 1] =logsumexp(addition)
+        b_mat = np.tile(b_table[:, i], (t_table.shape[ROW_INDEX], 1))
+        e_mat = np.tile(e_table[:, LETTERS_DICT[seq[i]]], (t_table.shape[ROW_INDEX], 1))
+        addition = b_mat + t_table + e_mat
+        b_table[:, i - 1] = logsumexp(addition, axis=COL_INDEX)
     return b_table
 
+
 def posterior(seq, e_table, t_table):
-    f_table = forward(seq,e_table,t_table)
-    b_table = backward(seq,e_table,t_table)
-    posterior_table=f_table*b_table
-    posterior_table[posterior_table>=np.inf]=-np.inf
-    maxies=posterior_table.argmax(axis=0)
-    return maxies[1:-1]
-    
+    f_table = forward(seq, e_table, t_table)
+    b_table = backward(seq, e_table, t_table)
+    posterior_table = f_table + b_table
+    maxies = posterior_table.argmax(axis=ROW_INDEX)
+    return maxies[ORIGINAL_SEQ_START_INDEX:ORIGINAL_SEQ_END_INDEX]
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -199,15 +206,15 @@ def main():
         print_path(path, args.seq)
 
     elif args.alg == 'forward':
-        f_table = forward(pad_seq(args.seq),e_table,t_table)
-        return (f_table[B_END_INDEX][-1])
+        f_table = forward(pad_seq(args.seq), e_table, t_table)
+        print(f_table[B_END_INDEX][FINISH_COL_INDEX_FORWARD])
 
     elif args.alg == 'backward':
-        b_table = backward(pad_seq(args.seq),e_table,t_table)
-        return (b_table[B_START_INDEX][0])
+        b_table = backward(pad_seq(args.seq), e_table, t_table)
+        print (b_table[B_START_INDEX][FINISH_COL_INDEX_BACKWARD])
 
     elif args.alg == 'posterior':
-        states = posterior(pad_seq(args.seq),e_table,t_table)
+        states = list(posterior(pad_seq(args.seq), e_table, t_table))
         print_path(states, args.seq)
 
 
