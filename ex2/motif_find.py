@@ -1,3 +1,7 @@
+####
+#matan halfon 205680648
+#Tal Gliksman 203834486
+####
 import argparse
 import pandas as pd
 import numpy as np
@@ -182,6 +186,13 @@ def backward(seq, e_table, t_table):
 
 
 def posterior(seq, e_table, t_table):
+    """
+    compute the posterior in each letter in the seq
+    :param seq: DNA seq
+    :param e_table: emission table
+    :param t_table: transition table
+    :return: the posterior
+    """
     f_table = forward(seq, e_table, t_table)
     b_table = backward(seq, e_table, t_table)
     posterior_table = f_table + b_table
@@ -190,6 +201,9 @@ def posterior(seq, e_table, t_table):
 
 
 def main():
+    """
+    a program that prints the wanted algorithm output.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument('--alg', help='Algorithm (e.g. viterbi)', required=True)
     parser.add_argument('seq', help='A sequence over the alphabet [A,C,G,T] (e.g. ACTGGACTACGTCATGCA)')
